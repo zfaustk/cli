@@ -13,6 +13,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	loadMultiAppConfig = core.LoadMultiAppConfig
+	saveMultiAppConfig = core.SaveMultiAppConfig
+	removeSecretStore  = core.RemoveSecretStore
+	removeStoredToken  = auth.RemoveStoredToken
+)
+
 // ConfigRemoveOptions holds all inputs for config remove.
 type ConfigRemoveOptions struct {
 	Factory *cmdutil.Factory
@@ -39,23 +46,23 @@ func NewCmdConfigRemove(f *cmdutil.Factory, runF func(*ConfigRemoveOptions) erro
 func configRemoveRun(opts *ConfigRemoveOptions) error {
 	f := opts.Factory
 
-	config, err := core.LoadMultiAppConfig()
+	config, err := loadMultiAppConfig()
 	if err != nil || config == nil || len(config.Apps) == 0 {
 		return output.ErrValidation("not configured yet")
 	}
 
-	// Clean up keychain entries for all apps
-	for _, app := range config.Apps {
-		core.RemoveSecretStore(app.AppSecret, f.Keychain)
-		for _, user := range app.Users {
-			auth.RemoveStoredToken(app.AppId, user.UserOpenId)
-		}
+	// Save empty config first so a write failure does not destroy the only recoverable state.
+	empty := &core.MultiAppConfig{Apps: []core.AppConfig{}}
+	if err := saveMultiAppConfig(empty); err != nil {
+		return output.Errorf(output.ExitInternal, "internal", "failed to save config: %v", err)
 	}
 
-	// Save empty config
-	empty := &core.MultiAppConfig{Apps: []core.AppConfig{}}
-	if err := core.SaveMultiAppConfig(empty); err != nil {
-		return output.Errorf(output.ExitInternal, "internal", "failed to save config: %v", err)
+	// Clean up keychain entries for all apps after config has been cleared successfully.
+	for _, app := range config.Apps {
+		removeSecretStore(app.AppSecret, f.Keychain)
+		for _, user := range app.Users {
+			_ = removeStoredToken(app.AppId, user.UserOpenId)
+		}
 	}
 	output.PrintSuccess(f.IOStreams.ErrOut, "Configuration removed")
 	userCount := 0
