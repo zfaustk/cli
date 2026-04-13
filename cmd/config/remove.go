@@ -4,7 +4,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/cmdutil"
@@ -57,7 +59,13 @@ func configRemoveRun(opts *ConfigRemoveOptions) error {
 	f := opts.Factory
 
 	config, err := opts.LoadConfig()
-	if err != nil || config == nil || len(config.Apps) == 0 {
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return output.ErrValidation("not configured yet")
+		}
+		return output.Errorf(output.ExitInternal, "internal", "failed to load config: %v", err)
+	}
+	if config == nil || len(config.Apps) == 0 {
 		return output.ErrValidation("not configured yet")
 	}
 
@@ -69,22 +77,35 @@ func configRemoveRun(opts *ConfigRemoveOptions) error {
 	}
 
 	// Clean up keychain entries for all apps after config is cleared.
+	tokenTargets := 0
+	tokenRemoved := 0
+	tokenFailures := 0
 	for _, app := range config.Apps {
 		opts.RemoveSecret(app.AppSecret, f.Keychain)
 		for _, user := range app.Users {
+			tokenTargets++
 			if err := opts.RemoveStoredToken(app.AppId, user.UserOpenId); err != nil {
+				tokenFailures++
 				fmt.Fprintf(f.IOStreams.ErrOut, "warning: failed to remove a stored token for app %q: %v\n", app.AppId, err)
+				continue
 			}
+			tokenRemoved++
 		}
 	}
 
 	output.PrintSuccess(f.IOStreams.ErrOut, "Configuration removed")
-	userCount := 0
-	for _, app := range config.Apps {
-		userCount += len(app.Users)
-	}
-	if userCount > 0 {
-		fmt.Fprintf(f.IOStreams.ErrOut, "Cleared tokens for %d users\n", userCount)
+	if tokenTargets > 0 {
+		if tokenFailures == 0 {
+			fmt.Fprintf(f.IOStreams.ErrOut, "Cleared tokens for %d users\n", tokenRemoved)
+		} else {
+			fmt.Fprintf(
+				f.IOStreams.ErrOut,
+				"Token cleanup attempted for %d users: removed %d, failed %d\n",
+				tokenTargets,
+				tokenRemoved,
+				tokenFailures,
+			)
+		}
 	}
 	return nil
 }
